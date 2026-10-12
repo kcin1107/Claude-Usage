@@ -3,11 +3,12 @@
 set -eu
 cd "$(dirname "$0")"
 
-xcodebuild -project ClaudeUsage.xcodeproj \
-    -scheme ClaudeUsage \
+xcodebuild -project Crescent.xcodeproj \
+    -scheme Crescent \
     -configuration Release \
     -derivedDataPath build \
+    SDK_STAT_CACHE_ENABLE=NO \
     build
 
-ditto build/Build/Products/Release/ClaudeUsage.app ClaudeUsage.app
-echo "Built ClaudeUsage.app"
+ditto build/Build/Products/Release/Crescent.app Crescent.app
+echo "Built Crescent.app"

@@ -8,9 +8,9 @@
         A00000000000000000000012 = {isa = PBXBuildFile; fileRef = A00000000000000000000013; };
         A00000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
         A00000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-        A00000000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeUsage.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        A00000000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Crescent.app; sourceTree = BUILT_PRODUCTS_DIR; };
         A00000000000000000000004 = {isa = PBXGroup; children = (A00000000000000000000005, A00000000000000000000006); sourceTree = "<group>"; };
-        A00000000000000000000005 = {isa = PBXGroup; children = (A00000000000000000000002, A00000000000000000000013); name = ClaudeUsage; path = Sources/ClaudeUsage; sourceTree = "<group>"; };
+        A00000000000000000000005 = {isa = PBXGroup; children = (A00000000000000000000002, A00000000000000000000013); name = Crescent; path = Sources/Crescent; sourceTree = "<group>"; };
         A00000000000000000000006 = {isa = PBXGroup; children = (A00000000000000000000003); name = Products; sourceTree = "<group>"; };
         A00000000000000000000007 = {
             isa = PBXNativeTarget;
@@ -18,8 +18,8 @@
             buildPhases = (A00000000000000000000008, A00000000000000000000009, A0000000000000000000000A);
             buildRules = ();
             dependencies = ();
-            name = ClaudeUsage;
-            productName = ClaudeUsage;
+            name = Crescent;
+            productName = Crescent;
             productReference = A00000000000000000000003;
             productType = "com.apple.product-type.application";
         };
