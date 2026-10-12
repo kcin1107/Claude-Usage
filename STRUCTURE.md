@@ -6,6 +6,6 @@
 - `Design/PreviousAppIcon` — earlier icon source retained for reference.
 - `build.sh` — release build script.
 
-The bundle identifier remains `local.claudeusage` so existing app settings and sign-in data continue to work after the rename.
+The bundle identifier is `local.crescent`. The `build.sh` output is signed for local development; the GitHub release is separately Developer ID-signed and notarized.
 
 Generated `build/` and `Crescent.app/` are ignored by Git.
