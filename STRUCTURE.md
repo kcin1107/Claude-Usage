@@ -2,6 +2,7 @@
 
 - `Sources/Crescent/main.swift` — app source.
 - `Sources/Crescent/AppIcon.icon` — layered Icon Composer source.
+- `Assets/Crescent-Icon.png` — README preview exported from the compiled icon.
 - `Crescent.xcodeproj` — Xcode project and shared scheme.
 - `Design/PreviousAppIcon` — earlier icon source retained for reference.
 - `build.sh` — release build script.

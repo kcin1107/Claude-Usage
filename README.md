@@ -1,11 +1,7 @@
 # Crescent
 
-A native macOS app for viewing Claude usage.
+![Crescent app icon exported from Icon Composer](Assets/Crescent-Icon.png)
 
-Build the app with `./build.sh`. The script writes the release build to `Crescent.app`.
+A native macOS menu bar app for viewing Claude usage.
 
-The app icon is an editable Icon Composer document at `Sources/Crescent/AppIcon.icon`.
-
-## Download
-
-Download [Crescent 1.0](https://github.com/kcin1107/Crescent/releases/tag/v1.0), unzip `Crescent-1.0-macOS.zip`, and move `Crescent.app` to Applications. It requires macOS 13 or later. The release app is Developer ID-signed and notarized by Apple.
+[Download Crescent 1.0](https://github.com/kcin1107/crescent/releases/tag/v1.0) for macOS 13 or later. The app is Developer ID signed and notarized by Apple.
