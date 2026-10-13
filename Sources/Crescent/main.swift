@@ -3,55 +3,122 @@ import ServiceManagement
 import WebKit
 import os
 
-let log = Logger(subsystem: "local.claudeusage", category: "usage")
+let log = Logger(subsystem: "local.crescent", category: "usage")
 
 // MARK: - Keychain (via /usr/bin/security, the same way Claude Code reads/writes it)
 
 let keychainService = "Claude Code-credentials"
 
 @discardableResult
-func security(_ args: [String]) -> (ok: Bool, out: String) {
+func security(_ args: [String], timeout: TimeInterval = 10) -> (ok: Bool, out: String, status: Int32?) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     p.arguments = args
     let pipe = Pipe()
     p.standardOutput = pipe
     p.standardError = FileHandle.nullDevice
-    guard (try? p.run()) != nil else { return (false, "") }
+    guard (try? p.run()) != nil else { return (false, "", nil) }
     // `security` has been seen to hang on some macOS builds; don't let it block us forever.
-    let deadline = Date().addingTimeInterval(10)
+    let deadline = Date().addingTimeInterval(timeout)
     while p.isRunning && Date() < deadline { usleep(50_000) }
-    if p.isRunning { p.terminate(); return (false, "") }
+    if p.isRunning {
+        p.terminate()
+        log.error("security \(args[0], privacy: .public) timed out")
+        return (false, "", nil)
+    }
     let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines))
+    return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines), p.terminationStatus)
 }
 
-func readCredentials() -> [String: Any]? {
+enum CredentialRead {
+    case found([String: Any]), missing, failed
+}
+
+func readCredentials() -> CredentialRead {
     let r = security(["find-generic-password", "-s", keychainService, "-a", NSUserName(), "-w"])
-    guard r.ok, let data = r.out.data(using: .utf8) else { return nil }
-    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    if r.status == 44 { return .missing }  // errSecItemNotFound from the security CLI.
+    guard r.ok, let data = r.out.data(using: .utf8),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .failed }
+    return .found(root)
 }
 
-func writeCredentials(_ root: [String: Any]) {
+/// Returns false if the Keychain write failed. Waits up to 2 minutes, in case macOS is asking for access.
+func writeCredentials(_ root: [String: Any]) -> Bool {
     guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
-          let json = String(data: data, encoding: .utf8) else { return }
-    security(["add-generic-password", "-U", "-s", keychainService, "-a", NSUserName(), "-w", json])
+          let json = String(data: data, encoding: .utf8) else { return false }
+    let ok = security(["add-generic-password", "-U", "-s", keychainService, "-a", NSUserName(), "-w", json],
+                      timeout: 120).ok
+    if !ok { log.error("Saving the renewed Claude Code token to the Keychain failed") }
+    return ok
 }
 
 // MARK: - Token
 
 enum UsageError: Error { case noCredentials, refreshFailed, notSignedIn, http(Int) }
 
-/// Returns a valid access token, refreshing it (and writing the rotated tokens back
-/// so Claude Code keeps working) if it has expired.
-func accessToken() async throws -> String {
-    guard var root = readCredentials(),
-          var oauth = root["claudeAiOauth"] as? [String: Any],
-          let token = oauth["accessToken"] as? String else { throw UsageError.noCredentials }
+func expiry(_ root: [String: Any]) -> Double {
+    ((root["claudeAiOauth"] as? [String: Any])?["expiresAt"] as? Double ?? 0) / 1000
+}
 
-    let expiresAt = (oauth["expiresAt"] as? Double ?? 0) / 1000
-    if expiresAt == 0 || expiresAt > Date().timeIntervalSince1970 + 60 { return token }
+/// Hands out Claude Code's access token, renewing it when it has expired.
+actor TokenStore {
+    static let shared = TokenStore()
 
+    /// Refresh tokens are single-use, so parallel refreshes (timer + menu) share one renewal.
+    /// Two renewals with the same refresh token can get the whole login revoked.
+    private var renewal: Task<String, Error>?
+    /// Renewed credentials that couldn't be saved yet. The server has already rotated the
+    /// refresh token, so losing these would log Claude Code out; keep them and retry saving.
+    private var unsaved: (source: [String: Any], rotated: [String: Any])?
+
+    func accessToken() async throws -> String {
+        if let renewal { return try await renewal.value }
+
+        let stored: [String: Any]
+        switch readCredentials() {
+        case .found(let root): stored = root
+        case .missing:
+            unsaved = nil  // Respect a logout instead of recreating the deleted login.
+            throw UsageError.noCredentials
+        case .failed:
+            // Access can fail temporarily (e.g. a locked Keychain). Retain pending tokens,
+            // but don't write until we can verify that the original login is still there.
+            throw UsageError.noCredentials
+        }
+        var root: [String: Any]? = stored
+        var source = stored
+        if let pending = unsaved {
+            if NSDictionary(dictionary: stored).isEqual(to: pending.source) {
+                if writeCredentials(pending.rotated) {
+                    unsaved = nil
+                    source = pending.rotated
+                }
+                root = pending.rotated
+            } else {
+                unsaved = nil  // Another login replaced the credentials we renewed.
+            }
+        }
+        guard let root, let oauth = root["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String else { throw UsageError.noCredentials }
+
+        let expiresAt = expiry(root)
+        if expiresAt == 0 || expiresAt > Date().timeIntervalSince1970 + 60 { return token }
+
+        let task = Task { () -> String in
+            let (newRoot, newToken) = try await renew(root)
+            if !writeCredentials(newRoot) { self.unsaved = (source, newRoot) }
+            return newToken
+        }
+        renewal = task
+        defer { renewal = nil }
+        return try await task.value
+    }
+}
+
+/// Exchanges the refresh token for new tokens. Returns the updated credentials and the access token.
+func renew(_ root: [String: Any]) async throws -> ([String: Any], String) {
+    var root = root
+    var oauth = root["claudeAiOauth"] as? [String: Any] ?? [:]
     guard let refreshToken = oauth["refreshToken"] as? String else { throw UsageError.refreshFailed }
     var req = URLRequest(url: URL(string: "https://platform.claude.com/v1/oauth/token")!)
     req.httpMethod = "POST"
@@ -65,17 +132,22 @@ func accessToken() async throws -> String {
     req.httpBody = Data((form.percentEncodedQuery ?? "").utf8)
 
     let (data, resp) = try await URLSession.shared.data(for: req)
-    guard (resp as? HTTPURLResponse)?.statusCode == 200,
+    let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+    guard status == 200,
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let newToken = json["access_token"] as? String else { throw UsageError.refreshFailed }
+          let newToken = json["access_token"] as? String else {
+        // Error responses only describe the problem (e.g. invalid_grant); no tokens in them.
+        let body = String(data: data.prefix(300), encoding: .utf8) ?? ""
+        log.error("Claude Code token renewal failed: HTTP \(status) \(status == 200 ? "" : body, privacy: .public)")
+        throw UsageError.refreshFailed
+    }
 
     oauth["accessToken"] = newToken
     if let rt = json["refresh_token"] as? String { oauth["refreshToken"] = rt }
     let expiresIn = json["expires_in"] as? Double ?? 3600
     oauth["expiresAt"] = Int64((Date().timeIntervalSince1970 + expiresIn) * 1000)
     root["claudeAiOauth"] = oauth
-    writeCredentials(root)
-    return newToken
+    return (root, newToken)
 }
 
 // MARK: - Usage
@@ -86,20 +158,37 @@ struct Usage { var session: Limit; var weekly: Limit }
 enum Source { case claudeCode, web }
 
 /// Prefers Claude Code's login; falls back to a claude.ai sign-in for chat-only users.
-/// Testing aid: `defaults write local.claudeusage ignoreClaudeCode -bool YES` simulates a chat-only user.
+/// Testing aid: `defaults write local.crescent ignoreClaudeCode -bool YES` simulates a chat-only user.
 func fetchUsage() async throws -> (Usage, Source) {
-    if !UserDefaults.standard.bool(forKey: "ignoreClaudeCode"), let token = try? await accessToken() {
+    var claudeCodeError: Error?
+    if !UserDefaults.standard.bool(forKey: "ignoreClaudeCode") {
+        var token: String?
         do {
-            do {
-                return (try await fetchFromUsageEndpoint(token), .claudeCode)
-            } catch {
-                return (try await fetchFromMessageHeaders(token), .claudeCode)
-            }
+            token = try await TokenStore.shared.accessToken()
+        } catch UsageError.noCredentials {
+            // Claude Code isn't set up: a chat-only user, go straight to claude.ai.
         } catch {
-            guard await ClaudeWeb.shared.hasSession() else { throw error }
+            log.error("Claude Code login unavailable: \(String(describing: error), privacy: .public)")
+            claudeCodeError = error
+        }
+        if let token {
+            do {
+                do {
+                    return (try await fetchFromUsageEndpoint(token), .claudeCode)
+                } catch {
+                    return (try await fetchFromMessageHeaders(token), .claudeCode)
+                }
+            } catch {
+                guard await ClaudeWeb.shared.hasSession() else { throw error }
+            }
         }
     }
-    return (try await ClaudeWeb.shared.fetchUsage(), .web)
+    do {
+        return (try await ClaudeWeb.shared.fetchUsage(), .web)
+    } catch UsageError.notSignedIn where claudeCodeError != nil {
+        // Not signed in to claude.ai either; the Claude Code problem is the more useful message.
+        throw claudeCodeError!
+    }
 }
 
 /// Free endpoint, same data as `/usage` in Claude Code.
@@ -565,7 +654,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let msg: String
         switch error {
         case UsageError.noCredentials, UsageError.refreshFailed, UsageError.notSignedIn:
-            msg = "Not signed in"
+            // An expired Claude Code login needs `claude` run once; signing in to claude.ai also works.
+            if case UsageError.refreshFailed = error { msg = "Claude Code login expired" } else { msg = "Not signed in" }
             source = nil
             accountItem.title = "Sign in to Claude…"
             accountItem.isHidden = false
